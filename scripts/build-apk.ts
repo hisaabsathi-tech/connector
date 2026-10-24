@@ -24,10 +24,11 @@ const abis = abiArg ?? (abiIndex >= 0 ? process.argv[abiIndex + 1] : undefined) 
 const universal = process.argv.includes("--universal");
 // Several CPU types and not --universal: one APK each.
 const split = !universal && abis.includes(",");
-// `--aab` also builds the Play Console app bundle (`…-v<version>.aab`), in a second Gradle run:
-// Gradle can't build a bundle while splitting APKs by CPU type (issuetracker.google.com/402800800).
-// It holds every CPU type; Play sends each phone only its own.
-const aab = process.argv.includes("--aab");
+// Every build also makes the Play Console app bundle (`…-v<version>.aab`) beside the APKs, in a
+// second Gradle run: Gradle can't build a bundle while splitting APKs by CPU type
+// (issuetracker.google.com/402800800). It holds every CPU type; Play sends each phone only its own.
+// `--no-aab` skips it for a quicker APK-only build.
+const aab = !process.argv.includes("--no-aab");
 
 /** The file name suffix that tells people which phones an APK is for. */
 function abiSuffix(abi: string): string {
@@ -72,7 +73,7 @@ try {
   rmSync(bundleOut, { force: true });
 
   console.log(
-    `Building production APK${split ? "s" : ""} v${version} (${abis}${split ? ", one per CPU type" : ""}) for ${production.apiUrl}`,
+    `Building production APK${split ? "s" : ""} v${version} (${abis}${split ? ", one per CPU type" : ""})${aab ? " and the Play Console bundle" : ""} for ${production.apiUrl}`,
   );
   if (production.empty.length > 0) {
     console.warn(`Warning: empty in .env.production: ${production.empty.join(", ")}`);

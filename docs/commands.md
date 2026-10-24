@@ -190,8 +190,11 @@ Android phone. It:
 4. Runs `./gradlew assembleRelease` and copies one APK per CPU type to `apks/android/`:
    `hisaabsathi-connect-vX.Y.Z.apk` for 64-bit phones (almost all of them) and
    `hisaabsathi-connect-vX.Y.Z-32bit.apk` for older 32-bit ones.
+5. Runs `./gradlew bundleRelease` and copies the Play Store bundle to the same folder:
+   `hisaabsathi-connect-vX.Y.Z.aab`, the file to upload in Play Console. It holds every CPU type;
+   Play sends each phone only its own.
 
-It does **not** change `version.json`. Building the same version again first deletes the old APKs,
+It does **not** change `version.json`. Building the same version again first deletes the old APKs and bundle,
 then writes the new ones in their place, so a failed build never leaves a stale file. After the build
 it checks that the production API URL is really inside each APK's app bundle and fails if it is not.
 
@@ -201,7 +204,7 @@ real Android phone, and each APK carries just one of the two, so it is roughly a
 an APK with both. For other targets:
 
 ```bash
-bun run android:apk:build --aab                                     # also the Play Console bundle (.aab)
+bun run android:apk:build --no-aab                                  # APKs only, skip the Play Store bundle
 bun run android:apk:build --universal                               # one APK for 64- and 32-bit phones
 bun run android:apk:build --abi arm64-v8a                           # 64-bit phones only
 bun run android:apk:build --abi armeabi-v7a,arm64-v8a,x86,x86_64    # one APK per type, also emulators

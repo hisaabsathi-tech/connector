@@ -23,7 +23,7 @@ const TABS: { label: string; value: AttendanceView }[] = [
 ];
 
 type Access = {
-  /** Owns the organisation: the only person who gets its roster. */
+  /** Owns the organisation; with a superadmin, the people who get its roster. */
   owner: boolean;
   /** Checks in themselves; false for a superadmin while Superadmin Attendance is off. */
   selfAttendance: boolean;
@@ -90,11 +90,23 @@ function useAccess(token: string | null) {
   return access;
 }
 
+/** The organisation's superadmin role, however its slug is spelled. */
+function isSuperadminRole(slug: string | null | undefined) {
+  return (
+    slug
+      ?.trim()
+      .replace(/[^A-Za-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .toLowerCase() === "superadmin"
+  );
+}
+
 /**
- * The Attendance tab. Only the organisation's owner gets its roster (Company); when they also
- * check in themselves (Superadmin Attendance on) they get Company / Own tabs to see their own
- * attendance too. Every other member sees only their own. Without the Attendance menu the tab is
- * hidden and a link goes Home; with it but without attendance view, the tab says so.
+ * The Attendance tab. The organisation's owner and every superadmin of it get its roster
+ * (Company); when they also check in themselves (Superadmin Attendance on) they get Company / Own
+ * tabs to see their own attendance too, and without it only the roster. Every other member sees
+ * only their own. Without the Attendance menu the tab is hidden and a link goes Home; with it but
+ * without attendance view, the tab says so.
  */
 export function AttendanceScreen() {
   const { token } = useAuthSession();
@@ -114,7 +126,7 @@ export function AttendanceScreen() {
         <ListPageSkeleton chips={false} />
       </TabScreen>
     );
-  if (!access.owner) return <OwnAttendance />;
+  if (!(access.owner || isSuperadminRole(viewer.viewer?.roleSlug))) return <OwnAttendance />;
   if (!access.selfAttendance) return <CompanyAttendance />;
   const tabs = <ViewTabs onChange={setView} value={view} />;
   return view === "company" ? <CompanyAttendance tabs={tabs} /> : <OwnAttendance tabs={tabs} />;

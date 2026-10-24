@@ -4,9 +4,8 @@ import { graphqlRequest } from "@/lib/api/graphql";
 import type { AttendanceSubStatus } from "./attendance";
 
 /**
- * Whether the signed-in user owns the active organisation, the only person who gets its
- * attendance (Company tab). Internal members never do, even with the superadmin role, which can
- * be given to anyone, so this compares the organisation's owner with the user instead.
+ * Whether the signed-in user owns the active organisation. The owner gets its attendance (Company
+ * tab) even when their member role there isn't superadmin.
  */
 export async function fetchIsOrgOwner(token: string): Promise<boolean> {
   const payload = await graphqlRequest<{

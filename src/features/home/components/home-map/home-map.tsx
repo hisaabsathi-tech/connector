@@ -38,6 +38,7 @@ import type { Point } from "@/lib/api/attendance";
 import { fetchRoute, type RoadRoute } from "@/lib/api/maps";
 import { useAuthSession } from "@/lib/auth/session";
 import {
+  bearingAlongRoute,
   bearingBetween,
   bearingTowardsTarget,
   type Coordinates,
@@ -158,6 +159,9 @@ const pinLabels: Partial<Record<PinKind, string>> = {
   transit: "Check-in",
 };
 
+// Smaller turns than this are left out, so the pin doesn't wobble with every small change.
+const ROTATE_MIN_DEGREES = 3;
+
 /**
  * A vehicle pin that turns smoothly to its new bearing, always the short way round (350° → 10°
  * turns 20° clockwise, not 340° back).
@@ -175,6 +179,7 @@ function RotatingPin({
   useEffect(() => {
     const current = angle.value;
     const delta = ((((bearing - current) % 360) + 540) % 360) - 180;
+    if (Math.abs(delta) < ROTATE_MIN_DEGREES) return;
     angle.value = withTiming(current + delta, {
       duration: 450,
       easing: Easing.out(Easing.quad),
@@ -1452,7 +1457,7 @@ export function LiveTripMap({
   start?: Coordinates | null;
   /** How the vehicle is drawn, from its wheel count (`vehiclePinFor`). */
   vehiclePin?: VehiclePin;
-  /** Bearing in degrees from north, overriding path-calculated direction. */
+  /** The phone's compass heading: faced only before the vehicle has a road or a driven direction. */
   bearing?: number;
   /** The stop the vehicle is heading to now; the predicted path goes there first. */
   nextStopId?: string | null;
@@ -1481,10 +1486,17 @@ export function LiveTripMap({
   const [focusId, setFocusId] = useState<string | null>(null);
   const points = useMemo(() => {
     const headingPath = vehicle ? [...path, vehicle] : path;
-    const computedBearing =
-      vehicle && destination
-        ? bearingTowardsTarget(vehicle, destination, route?.coordinates ?? null)
-        : (bearing ?? travelBearing(headingPath));
+    // On the planned road, the way that road runs. Off it (another road, before the route has
+    // loaded, or with no delivery left), the way it has actually been driving, kept while it
+    // stands still. The phone's compass, unreliable while parked, and the straight line to the
+    // delivery are only for before it has moved at all.
+    const driven = travelBearing(headingPath);
+    const computedBearing = vehicle
+      ? ((destination ? bearingAlongRoute(vehicle, route?.coordinates) : null) ??
+        driven ??
+        bearing ??
+        (destination ? bearingBetween(vehicle, destination) : undefined))
+      : undefined;
     const items: (MapPoint | null)[] = [
       start
         ? {

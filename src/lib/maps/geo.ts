@@ -32,44 +32,110 @@ export function bearingBetween(a: Coordinates, b: Coordinates) {
   return ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
 }
 
+// How far ahead along the road the vehicle faces: far enough that GPS jitter of a few metres
+// barely turns it, near enough that it turns into each bend as it reaches it.
+const ROUTE_LOOKAHEAD_METRES = 30;
+// Farther than this from the road it was given, the vehicle has left that route (a detour, or a
+// route planned from an older position), so it faces the delivery itself instead.
+const OFF_ROUTE_METRES = 75;
+
+type FlatPoint = { x: number; y: number };
+
 /**
- * Compass bearing (0–360°) pointing from `from` towards `target`.
- * When road route coordinates (`[longitude, latitude][]`) are provided, it looks forward
- * along the route from the position closest to `from` for the first point at least `minMetres`
- * away, pointing along the road path towards the delivery address.
- * Falls back to direct compass bearing from `from` to `target`.
+ * Where `from` meets `route` (`[longitude, latitude][]`) and the point `lookaheadMetres` further
+ * along it, or null when `from` is off the route or already at its end. Distances use a flat
+ * projection around `from`, accurate over the short stretch involved.
+ */
+function stretchAheadOnRoute(
+  from: Coordinates,
+  route: [number, number][],
+  lookaheadMetres: number,
+): { on: Coordinates; ahead: Coordinates } | null {
+  const metresPerDegree = (EARTH_DIAMETER_METRES / 2) * RADIANS;
+  const cosLat = Math.cos(from.latitude * RADIANS);
+  const toFlat = ([longitude, latitude]: [number, number]): FlatPoint => ({
+    x: (longitude - from.longitude) * metresPerDegree * cosLat,
+    y: (latitude - from.latitude) * metresPerDegree,
+  });
+  const toCoordinates = ({ x, y }: FlatPoint): Coordinates => ({
+    latitude: from.latitude + y / metresPerDegree,
+    longitude: from.longitude + x / (metresPerDegree * cosLat),
+  });
+  const points = route.map(toFlat);
+
+  // Where the vehicle meets the road: the nearest point on any segment, not the nearest vertex,
+  // so a vertex just behind the vehicle never wins.
+  let segment = -1;
+  let along: FlatPoint = { x: 0, y: 0 };
+  let nearest = Number.POSITIVE_INFINITY;
+  for (let i = 0; i < points.length - 1; i += 1) {
+    const a = points[i] as FlatPoint;
+    const b = points[i + 1] as FlatPoint;
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const lengthSquared = dx * dx + dy * dy;
+    const t = lengthSquared ? Math.min(1, Math.max(0, -(a.x * dx + a.y * dy) / lengthSquared)) : 0;
+    const point = { x: a.x + t * dx, y: a.y + t * dy };
+    const distance = Math.hypot(point.x, point.y);
+    if (distance < nearest) {
+      nearest = distance;
+      segment = i;
+      along = point;
+    }
+  }
+  if (segment < 0 || nearest > OFF_ROUTE_METRES) return null;
+
+  // Walk forward along the road from there.
+  let remaining = lookaheadMetres;
+  let current = along;
+  for (let i = segment + 1; i < points.length; i += 1) {
+    const next = points[i] as FlatPoint;
+    const length = Math.hypot(next.x - current.x, next.y - current.y);
+    if (length >= remaining) {
+      const share = remaining / length;
+      const ahead = {
+        x: current.x + (next.x - current.x) * share,
+        y: current.y + (next.y - current.y) * share,
+      };
+      return { ahead: toCoordinates(ahead), on: toCoordinates(along) };
+    }
+    remaining -= length;
+    current = next;
+  }
+  // Less road left than the look-ahead: face where it ends, unless the vehicle is already there.
+  return Math.hypot(current.x - along.x, current.y - along.y) > 3
+    ? { ahead: toCoordinates(current), on: toCoordinates(along) }
+    : null;
+}
+
+/**
+ * The way the road (`[longitude, latitude][]`) runs where the vehicle at `from` is on it: from its
+ * spot on the road to a point a little ahead. Null while it is off that road or at its end.
+ */
+export function bearingAlongRoute(
+  from: Coordinates,
+  routeCoords: [number, number][] | null | undefined,
+  lookaheadMetres = ROUTE_LOOKAHEAD_METRES,
+): number | null {
+  if (!routeCoords || routeCoords.length < 2) return null;
+  const stretch = stretchAheadOnRoute(from, routeCoords, lookaheadMetres);
+  return stretch ? bearingBetween(stretch.on, stretch.ahead) : null;
+}
+
+/**
+ * Compass bearing (0–360°) for a vehicle at `from` on its way to `target`. With the road route
+ * (`[longitude, latitude][]`), it faces the way that road goes from the vehicle's spot on it to a
+ * point a little ahead, so GPS drift to either side of the road doesn't tilt it. It depends only on
+ * positions, never on the phone's compass, so it stays right while parked, turning, or between
+ * location updates. Off the route, or without one, it faces `target` directly.
  */
 export function bearingTowardsTarget(
   from: Coordinates,
   target: Coordinates,
   routeCoords?: [number, number][] | null,
-  minMetres = 10,
+  lookaheadMetres = ROUTE_LOOKAHEAD_METRES,
 ): number {
-  if (routeCoords && routeCoords.length > 1) {
-    let closestIdx = 0;
-    let minDistance = Number.POSITIVE_INFINITY;
-    for (let i = 0; i < routeCoords.length; i++) {
-      const coord = routeCoords[i];
-      if (!coord) continue;
-      const pt: Coordinates = { latitude: coord[1], longitude: coord[0] };
-      const dist = distanceInMetres(from, pt);
-      if (dist < minDistance) {
-        minDistance = dist;
-        closestIdx = i;
-      }
-    }
-
-    for (let i = closestIdx; i < routeCoords.length; i++) {
-      const coord = routeCoords[i];
-      if (!coord) continue;
-      const pt: Coordinates = { latitude: coord[1], longitude: coord[0] };
-      if (distanceInMetres(from, pt) >= minMetres) {
-        return bearingBetween(from, pt);
-      }
-    }
-  }
-
-  return bearingBetween(from, target);
+  return bearingAlongRoute(from, routeCoords, lookaheadMetres) ?? bearingBetween(from, target);
 }
 
 /**

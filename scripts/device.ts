@@ -9,15 +9,50 @@ import { androidEnv } from "./android-env";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // Gradle task lines and third-party deprecation warnings drown out progress; errors still print.
 const verbose = process.argv.includes("--verbose");
+// Metro, then the API server: the app reaches both at the phone's own localhost.
+const TUNNEL_PORTS = [8081, 3000] as const;
+const TUNNEL_CHECK_MS = 3000;
+
+function openTunnels(adbBinary: string, deviceId: string, ports: readonly number[]) {
+  for (const port of ports) {
+    adb(adbBinary, ["-s", deviceId, "reverse", `tcp:${port}`, `tcp:${port}`]);
+  }
+}
+
+/**
+ * A USB drop (a loose cable, the phone asking again to allow USB debugging, adb restarting) ends
+ * the tunnels, and the app then says the server can't be reached though it's running. While this
+ * runs, they're put back as soon as the phone is back.
+ */
+function keepTunnels(adbBinary: string, deviceId: string) {
+  let connected = true;
+  setInterval(() => {
+    try {
+      const open = adb(adbBinary, ["-s", deviceId, "reverse", "--list"]);
+      const missing = TUNNEL_PORTS.filter((port) => !open.includes(`tcp:${port} tcp:${port}`));
+      if (missing.length === 0) return;
+      openTunnels(adbBinary, deviceId, missing);
+      console.log(`USB tunnel restored: phone localhost:${missing.join(", ")} → this computer`);
+      connected = true;
+    } catch {
+      if (!connected) return;
+      connected = false;
+      console.log(
+        "Phone disconnected from USB; the app can't reach this computer until it's back. If the phone asks, allow USB debugging (tick “Always allow”).",
+      );
+    }
+  }, TUNNEL_CHECK_MS).unref();
+}
 
 try {
   const { env } = androidEnv();
   const adbBinary = findAdb();
   const device = await chooseDevice(adbBinary, "bun run device");
-  for (const port of [8081, 3000]) {
-    adb(adbBinary, ["-s", device.id, "reverse", `tcp:${port}`, `tcp:${port}`]);
+  openTunnels(adbBinary, device.id, TUNNEL_PORTS);
+  for (const port of TUNNEL_PORTS) {
     console.log(`USB tunnel: phone localhost:${port} → this computer`);
   }
+  keepTunnels(adbBinary, device.id);
 
   const child = spawn(
     join(root, "node_modules/.bin/expo"),

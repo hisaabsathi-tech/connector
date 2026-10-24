@@ -26,10 +26,13 @@ export type Connectivity = {
 
 // A short empty round trip to the API server (`GET`/`HEAD /ping`).
 const PING_URL = `${env.apiUrl}/ping`;
-const PING_TIMEOUT_MS = 5_000;
-// While offline, check this often whether the server is back.
-const RECHECK_MS = 30_000;
+// Generous for a slow mobile network: a ping that is merely slow isn't the server being down.
+const PING_TIMEOUT_MS = 8_000;
+// While offline, check whether the server is back: soon at first (a short drop is over quickly),
+// then less often.
+const RECHECK_DELAYS_MS = [3_000, 5_000, 10_000, 20_000, 30_000] as const;
 const CONFIRM_RECHECK_MS = 5_000;
+// Failed pings in a row, a few seconds apart, before the server counts as down.
 const SERVER_FAILURE_THRESHOLD = 3;
 // Android pauses a backgrounded app's network, and for a moment after it reopens the phone can
 // report no connection and requests fail though nothing is wrong. Going offline in the background
@@ -44,12 +47,39 @@ let settleCheck: ReturnType<typeof setTimeout> | null = null;
 let lastDeviceConnected: boolean | null = null;
 const listeners = new Set<() => void>();
 const reconnectListeners = new Set<() => void>();
-let recheck: ReturnType<typeof setInterval> | null = null;
+let recheck: ReturnType<typeof setTimeout> | null = null;
+let recheckAttempt = 0;
 let started = false;
 let probing: Promise<void> | null = null;
 let serverFailures = 0;
 let confirmRecheck: ReturnType<typeof setTimeout> | null = null;
 
+/** Checks again later while offline, sooner after going offline and then less often. */
+function scheduleRecheck() {
+  const delay = RECHECK_DELAYS_MS[Math.min(recheckAttempt, RECHECK_DELAYS_MS.length - 1)];
+  recheckAttempt += 1;
+  recheck = setTimeout(() => {
+    recheck = null;
+    void probe().finally(() => {
+      if (state.status === "offline" && !recheck) scheduleRecheck();
+    });
+  }, delay);
+}
+
+function stopRecheck() {
+  if (recheck) clearTimeout(recheck);
+  recheck = null;
+  recheckAttempt = 0;
+}
+
+/** The server answered: earlier failed pings no longer count toward "server down". */
+function clearServerFailures() {
+  serverFailures = 0;
+  if (confirmRecheck) clearTimeout(confirmRecheck);
+  confirmRecheck = null;
+}
+
+/** A failed ping. Only pings count, so one drop that fails many requests at once counts once. */
 function markServerFailure() {
   serverFailures += 1;
   if (serverFailures >= SERVER_FAILURE_THRESHOLD) {
@@ -96,10 +126,9 @@ function set(status: ConnectivityStatus, reason?: OfflineReason) {
   const was = state.status;
   state = { reason: resolvedReason, since: Date.now(), status };
   if (status === "offline") {
-    recheck ??= setInterval(() => void probe(), RECHECK_MS);
-  } else if (recheck) {
-    clearInterval(recheck);
-    recheck = null;
+    if (!recheck) scheduleRecheck();
+  } else {
+    stopRecheck();
   }
   for (const listener of listeners) listener();
   if (status === "online" && was === "offline") {
@@ -110,9 +139,7 @@ function set(status: ConnectivityStatus, reason?: OfflineReason) {
 /** A request reached the server: the app is online. */
 export function reportReachable() {
   lastDeviceConnected = true;
-  serverFailures = 0;
-  if (confirmRecheck) clearTimeout(confirmRecheck);
-  confirmRecheck = null;
+  clearServerFailures();
   set("online");
 }
 
@@ -122,20 +149,9 @@ export function reportUnreachable(reason?: OfflineReason) {
     set("offline", reason);
     return;
   }
-  if (reason === "server_unreachable") markServerFailure();
-  else {
-    void Network.getNetworkStateAsync()
-      .then((net) => {
-        if (net.isConnected === false) {
-          lastDeviceConnected = false;
-          set("offline", "no_network");
-        } else {
-          lastDeviceConnected = true;
-          markServerFailure();
-        }
-      })
-      .catch(markServerFailure);
-  }
+  // A failed request only makes the app ask the server; the ping's answer decides. Requests that
+  // fail together (a screen loads several at once) share that one ping.
+  void probe();
 }
 
 /** Asks the server directly; the answer settles the status. */
@@ -155,6 +171,7 @@ export function probe(): Promise<void> {
       const response = await fetch(PING_URL, { method: "HEAD", signal: controller.signal });
       if (response.ok) {
         lastDeviceConnected = true;
+        clearServerFailures();
         set("online");
       } else {
         markServerFailure();

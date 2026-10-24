@@ -37,6 +37,28 @@ describe("connectivity", () => {
     expect(isOnline()).toBe(true);
   });
 
+  it("counts one network drop once, however many requests it fails at the same moment", async () => {
+    fake.server.offline = true;
+    // A screen loads several things at once; they all fail in the same drop.
+    await Promise.all(
+      Array.from({ length: 6 }, () => apiRequest("/anything", TOKEN).catch(() => undefined)),
+    );
+    await settle(5);
+    expect(isOnline()).toBe(true);
+  });
+
+  it("forgets earlier failed pings once the server answers one", async () => {
+    fake.server.offline = true;
+    await probe();
+    await probe();
+    fake.server.offline = false;
+    await probe();
+    // A later single blip starts the count over instead of tipping it into "server down".
+    fake.server.offline = true;
+    await probe();
+    expect(isOnline()).toBe(true);
+  });
+
   it("tells listeners once per return from offline, not on every success", async () => {
     let reconnects = 0;
     const stop = onReconnect(() => {

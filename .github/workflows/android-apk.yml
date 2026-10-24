@@ -165,7 +165,7 @@ jobs:
       # Same command as local builds: production env only, release signing, and a check that the
       # API URL is inside the bundle.
       - name: Build production APKs and Play bundle
-        run: bun run android:apk:build --aab
+        run: bun run android:apk:build
 
       - name: Name the APKs
         env:
